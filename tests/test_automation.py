@@ -285,6 +285,36 @@ class TestVagrantfileRender:
         assert "scylla-node1" in text
         assert text.endswith("end\n")
 
+    def test_io_cache_dir_scaffolded(self, tmp_path):
+        cfg = make_cfg(target=tmp_path)
+        write_vagrantfile(cfg, create_disks=False)
+        cache = tmp_path / "io-cache"
+        assert cache.is_dir()
+        assert (cache / "io.conf").exists()
+        assert (cache / "io_properties.yaml").exists()
+
+    def test_file_provisioner_only_on_non_seed(self):
+        out = render(make_cfg(node_count=3))
+        # Two `file` provisioner lines (io.conf + io_properties.yaml) per
+        # non-seed node = 2 × 2 = 4 total. Seed (scylla-node1) has none.
+        assert out.count('provision "file"') == 4
+        assert out.count('source: "io-cache/io.conf"') == 2
+        assert out.count('source: "io-cache/io_properties.yaml"') == 2
+        # Seed block must not carry them.
+        seed_block = out.split('config.vm.define "scylla-node')[1]
+        assert 'io-cache/io.conf' not in seed_block
+
+    def test_file_provisioner_before_setup_scylla(self):
+        out = render(make_cfg(node_count=3))
+        # On each non-seed block, file provisioners must come BEFORE the
+        # setup_scylla shell provisioner.
+        blocks = out.split('config.vm.define')[1:]
+        for block in blocks[1:]:  # skip seed
+            file_idx = block.find('provision "file"')
+            shell_idx = block.find('setup_scylla.sh')
+            assert file_idx != -1 and shell_idx != -1
+            assert file_idx < shell_idx
+
 
 # ----- shell script smoke tests ---------------------------------------------
 
@@ -325,7 +355,21 @@ class TestShellScripts:
         text = (ROOT / "provision" / "setup_scylla.sh").read_text()
         assert "get.scylladb.com/server" in text
         assert "--scylla-version" in text
-        assert "scylla_dev_mode_setup --developer-mode 1" in text
+        assert "scylla_setup --no-raid-setup" in text
+        assert "--online-discard 1" in text
+        assert "--nic eth1" in text
+        # io-setup flag is now dynamic (1 on seed, 0 on non-seed after cache)
+        assert '--io-setup "${IO_SETUP_FLAG}"' in text
+        assert "--no-fstrim-setup" in text
+        assert "--no-rsyslog-setup" in text
+
+    def test_setup_scylla_reuses_cached_io_files(self):
+        text = (ROOT / "provision" / "setup_scylla.sh").read_text()
+        # Non-seed path copies the seed's iotune output into /etc/scylla.d
+        assert "/tmp/io.conf" in text
+        assert "/tmp/io_properties.yaml" in text
+        assert "/etc/scylla.d/io.conf" in text or 'SCYLLA_D/io.conf' in text
+        assert "IO_SETUP_FLAG=0" in text
 
     def test_setup_scylla_polls_seed(self):
         text = (ROOT / "provision" / "setup_scylla.sh").read_text()

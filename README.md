@@ -162,7 +162,7 @@ vagrant destroy -f
 
 ## Design decisions
 
-- **Dev mode only**: `scylla_dev_mode_setup --developer-mode 1` is used; `scylla_setup` is skipped in VMs (IO/RAID/NTP setup is unreliable inside VMs per research)
+- **Regular `scylla_setup` with VM-friendly flags**: `scylla_setup --no-raid-setup --online-discard 1 --nic eth1 --io-setup 1 --no-fstrim-setup --no-rsyslog-setup`. RAID setup is skipped because `disk_setup.sh` already built the md0/XFS volume; `--nic eth1` targets the Vagrant `private_network` interface; `--io-setup 1` runs `iotune` against the prepared data volume; rsyslog and fstrim tuning are disabled for the lab environment. Dev mode is no longer used
 - **GossipingPropertyFileSnitch**: per-node `cassandra-rackdc.properties` is written *after* `scylla-conf` is installed but *before* first `scylla-server` start, so rack is registered on bootstrap and dpkg never hits a conffile prompt
 - **Seed first, then others**: `vagrant up scylla-node1` runs before the rest so gossip is reachable when they join. In multi-DC mode, the same global seed (dc1's first node) is used for all nodes — sufficient for lab clusters since gossip propagates once connectivity is established. For production, list one seed per DC
 - **Per-node DC env**: the Vagrantfile embeds each node's own `DC_NAME` in its `setup_scylla.sh` env block, so `GossipingPropertyFileSnitch` registers the correct datacenter on every node without a shared global
@@ -191,5 +191,5 @@ These are the issues hit and resolved while bringing up the first real 3-node cl
 
 - Docker-based alternatives
 - TLS / Alternator / monitoring stack
-- Production `scylla_setup` tuning (IO/NTP/RAID) — dev mode only
+- Full production `scylla_setup` tuning (RAID, fstrim, rsyslog are skipped for the lab)
 - Cross-DC gossip tuning beyond the shared single-seed layout

@@ -41,7 +41,7 @@ NODE_TEMPLATE = '''
       "DC_NAME" => "{dc_name}",
       "NODE_AZ" => "{az}"
     }}
-    node.vm.provision "shell", path: "provision/setup_scylla.sh", env: {{
+{io_cache_provisioners}    node.vm.provision "shell", path: "provision/setup_scylla.sh", env: {{
       "SCYLLA_VERSION" => "{scylla_version}",
       "MY_IP"          => "{ip}",
       "SEED_IP"        => "{seed_ip}",
@@ -51,6 +51,13 @@ NODE_TEMPLATE = '''
       "NODE_AZ"        => "{az}"
     }}
   end
+'''
+
+# File provisioners that push the seed's cached iotune output into non-seed
+# nodes before setup_scylla.sh runs. On the seed itself these are omitted
+# (the seed generates the files by running iotune).
+IO_CACHE_PROVISIONERS = '''    node.vm.provision "file", source: "io-cache/io.conf", destination: "/tmp/io.conf"
+    node.vm.provision "file", source: "io-cache/io_properties.yaml", destination: "/tmp/io_properties.yaml"
 '''
 
 VAGRANTFILE_FOOTER = "end\n"
@@ -106,6 +113,7 @@ def render(config: ClusterConfig) -> str:
     target_folder = Path(config.target_folder).resolve()
     parts = [VAGRANTFILE_HEADER.format(box=config.box_name)]
     for idx, node in enumerate(config.nodes):
+        is_seed = node.ip == config.seed_ip
         parts.append(NODE_TEMPLATE.format(
             name=node.name,
             ip=node.ip,
@@ -117,10 +125,25 @@ def render(config: ClusterConfig) -> str:
             scylla_version=config.scylla_version,
             seed_ip=config.seed_ip,
             cluster_name=config.cluster_name,
-            is_seed="1" if node.ip == config.seed_ip else "0",
+            is_seed="1" if is_seed else "0",
+            # Only non-seed nodes receive the cached iotune files.
+            io_cache_provisioners="" if is_seed else IO_CACHE_PROVISIONERS,
         ))
     parts.append(VAGRANTFILE_FOOTER)
     return "".join(parts)
+
+
+def _ensure_io_cache(target_folder: Path) -> None:
+    """Create target_folder/io-cache/ with empty placeholder files so Vagrant's
+    `file` provisioner validation passes even before the seed has run. The
+    placeholders are overwritten by vm_manager._extract_io_files() after the
+    seed node finishes its scylla_setup."""
+    cache = target_folder / "io-cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    for name in ("io.conf", "io_properties.yaml"):
+        p = cache / name
+        if not p.exists():
+            p.touch()
 
 
 def _copy_provision_scripts(target_folder: Path) -> None:
@@ -140,6 +163,7 @@ def write_vagrantfile(config: ClusterConfig, create_disks: bool = True) -> str:
     target = folder / "Vagrantfile"
     target.write_text(render(config))
     _copy_provision_scripts(folder)
+    _ensure_io_cache(folder)
     if create_disks:
         _create_vmdks(config)
     return str(target)

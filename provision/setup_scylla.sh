@@ -49,8 +49,37 @@ if id scylla >/dev/null 2>&1; then
   chown -R scylla:scylla /var/lib/scylla || true
 fi
 
-# Dev mode — skip scylla_setup's IO/RAID/NTP tuning (unreliable in VMs).
-scylla_dev_mode_setup --developer-mode 1 || true
+# Run the regular scylla_setup with VM-friendly flags. We skip RAID setup
+# (disk_setup.sh already prepared /var/lib/scylla), rsyslog (journald is
+# fine for a lab), and fstrim. --nic eth1 is the private_network interface
+# created by Vagrant.
+#
+# iotune speed-up: only the seed node actually runs `--io-setup 1` (which
+# invokes iotune and takes 1–3 minutes on the XFS/md0 volume). Non-seed
+# nodes receive the seed's generated /etc/scylla.d/io.conf + io_properties.yaml
+# via Vagrant `file` provisioners (dropped to /tmp/io.conf and
+# /tmp/io_properties.yaml before this script runs), copy them into place, and
+# pass `--io-setup 0` to skip iotune entirely. Because every VM has the same
+# shape (same vCPU/memory, identical XFS-on-md0 data volume), the iotune
+# results on the seed are valid for all nodes.
+SCYLLA_D=/etc/scylla.d
+mkdir -p "$SCYLLA_D"
+
+IO_SETUP_FLAG=1
+if [ "${IS_SEED}" != "1" ]; then
+  if [ -f /tmp/io.conf ] && [ -f /tmp/io_properties.yaml ]; then
+    echo "[scylla] reusing cached io.conf + io_properties.yaml from seed"
+    install -o root -g root -m 0644 /tmp/io.conf            "$SCYLLA_D/io.conf"
+    install -o root -g root -m 0644 /tmp/io_properties.yaml "$SCYLLA_D/io_properties.yaml"
+    IO_SETUP_FLAG=0
+  else
+    echo "[scylla] WARNING: non-seed node but no cached iotune files found;" \
+         "falling back to --io-setup 1 (slow)"
+  fi
+fi
+
+scylla_setup --no-raid-setup --online-discard 1 --nic eth1 \
+             --io-setup "${IO_SETUP_FLAG}" --no-fstrim-setup --no-rsyslog-setup
 
 # Patch scylla.yaml robustly via PyYAML.
 python3 - <<PY
