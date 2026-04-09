@@ -172,20 +172,6 @@ vagrant destroy -f
 - **udev settle after mdadm**: `mdadm --create` returns before udev finishes creating `/dev/md0`; `disk_setup.sh` runs `udevadm settle` + `mdadm --wait` + a bounded retry loop before `mkfs.xfs` to avoid the race
 - **Idempotent disk setup**: `disk_setup.sh` exits early if `/var/lib/scylla` is already mounted as XFS, and strips any stale fstab entry before re-writing, so `vagrant provision` is safe to re-run
 
-## Debug history (fixes applied during on-hardware validation)
-
-These are the issues hit and resolved while bringing up the first real 3-node cluster on an M5 MacBook Pro. Useful context if you hit anything similar.
-
-1. **`Missing prerequisites: vmrun`** — Fusion's `vmrun` binary isn't on PATH by default on Apple Silicon. Fix: `export PATH="/Applications/VMware Fusion.app/Contents/Public:$PATH"` (add to `~/.zshrc`).
-2. **`vagrant-utility.client.crt missing`** — the `vagrant-vmware-desktop` plugin needs the companion utility cask. Fix: `brew install --cask vagrant-vmware-utility`.
-3. **`path for shell provisioner does not exist`** — the generator only wrote the `Vagrantfile`, not the `provision/*.sh` files next to it. Fix: `vagrantfile_gen.py` now copies `provision/` into the target folder alongside the Vagrantfile.
-4. **`lsilogic is not valid device type for scsi1`** — SCSI's `lsilogic` controller is x86-only on Fusion for Apple Silicon. Fix: switched data disks to an NVMe controller (`nvme0.present = TRUE`, `nvme0:N.*` vmx keys).
-5. **`vmrun cannot find the virtual disk ...`** — pointed at Vagrant's `config.vm.disk` API, which on `vagrant-vmware-desktop 3.0.5` + arm64 bento crashes with `disk.rb:129 no implicit conversion of nil into String`. Fix: pre-create VMDKs with `vmware-vdiskmanager -c -s <GB>GB -a lsilogic -t 0` and attach via absolute-path vmx keys.
-6. **`disk_setup.sh` exited non-zero right after `mdadm: array /dev/md0 started.`** — `mkfs.xfs` raced the udev node creation for `/dev/md0`. Fix: `udevadm settle` + `mdadm --wait` + bounded retry loop before `mkfs.xfs`; also defensive `{ mdadm --detail --scan >> ...; } || true` so pipefail can't trip on the conf-append step.
-7. **`no data disks detected — skipping`** — a `--dry-run` re-regenerated the Vagrantfile after `vagrant destroy` without re-running `vmware-vdiskmanager`, leaving the vmx block pointing at deleted VMDK files. Fix: `_create_vmdks()` is now always called by `write_vagrantfile()` regardless of dry-run status.
-8. **`dpkg: error processing package scylla-conf ... end of file on stdin at conffile prompt`** — the pre-install `rackdc.sh` provisioner wrote `/etc/scylla/cassandra-rackdc.properties` before `scylla-conf` installed, so dpkg hit a conffile conflict and stalled on closed stdin. Fix: `rackdc.sh` is now a no-op kept for Vagrantfile compatibility; the rackdc file is written inside `setup_scylla.sh` *after* package install but *before* `systemctl enable --now scylla-server`. An `/etc/apt/apt.conf.d/99-noninteractive-scylla` drop-in additionally forces `--force-confdef --force-confnew` as belt-and-braces.
-9. **`NODE_AZ: NODE_AZ required`** — after folding rackdc into `setup_scylla.sh`, the Vagrantfile still only passed `DC_NAME`/`NODE_AZ` to the (now no-op) `rackdc.sh` provisioner. Fix: `vagrantfile_gen.py` now injects `DC_NAME` and `NODE_AZ` into the `setup_scylla.sh` env hash too.
-10. **`refresh_matrix.py`: RuntimeError: Failed to parse any version rows from docs page** — the first draft of the scraper only looked at a single header row and searched for a text `✓` character in each cell. The actual docs page uses a two-row header (distro family in row 1 with cells spanning, version number in row 2) and marks support with an `<i class="icon-check">` tag. Fix: `_build_column_map()` now walks both header rows and carries the last non-empty family name forward across empty cells, and `_cell_has_check()` looks for any `<i>` tag whose class list contains `check`.
 
 ## Out of scope
 
